@@ -12,12 +12,22 @@ def output(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT)
 
 
+def certificate_digest(text):
+    # Build Tools 37 prints "V2 Signer:" instead of the older "Signer #1".
+    # A certificate may be repeated for multiple verified signature schemes.
+    if not re.search(r"(?m)^Number of signers: 1$", text):
+        raise RuntimeError("Expected exactly one APK signer")
+    digests = {value.lower() for value in re.findall(
+        r"(?m)^(?:Signer #\d+|V[\d.]+ Signer[^:\r\n]*):? certificate SHA-256 digest: ([0-9a-fA-F]{64})$",
+        text)}
+    if len(digests) != 1:
+        raise RuntimeError("Missing or inconsistent APK signing certificates")
+    return digests.pop()
+
+
 def signer(apksigner, apk):
     text = output(str(apksigner), "verify", "--verbose", "--print-certs", str(apk))
-    digest = re.findall(r"Signer #\d+ certificate SHA-256 digest: (\w+)", text)
-    if len(digest) != 1:
-        raise RuntimeError(f"Expected one signing certificate: {apk}")
-    return digest[0]
+    return certificate_digest(text)
 
 
 def main():
