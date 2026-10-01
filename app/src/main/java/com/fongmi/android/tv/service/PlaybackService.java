@@ -4,7 +4,6 @@ import android.app.PendingIntent;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Binder;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 
@@ -242,12 +241,7 @@ public class PlaybackService extends MediaLibraryService implements MediaLibrary
     }
 
     private void removeForeground() {
-        // Service.stopForeground(int) 是 **API 24** 新增的重载（API 5 那个是 stopForeground(boolean)），
-        // minSdk=23 上调用会抛 NoSuchMethodError。
-        // 本方法在 onDestroy() / suspend() 里被调用 —— 服务销毁必走，触发概率比 PiP 那条更高。
-        // stopForeground(true) 与 STOP_FOREGROUND_REMOVE 语义一致（true 表示同时移除通知）。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
-        else stopForeground(true);
+        stopForeground(STOP_FOREGROUND_REMOVE);
     }
 
     private void saveProgress() {
@@ -514,7 +508,7 @@ public class PlaybackService extends MediaLibraryService implements MediaLibrary
     }
 
     @Override
-    public void onDanmakuSourceChanged(@Nullable Uri uri) {
+    public void onDanmakuSourceChanged(Uri uri) {
         playerCallbacks.forEach(callback -> callback.onDanmakuSourceChanged(uri));
     }
 
@@ -615,7 +609,7 @@ public class PlaybackService extends MediaLibraryService implements MediaLibrary
         default void onPlayerRebuild(Player player) {
         }
 
-        default void onDanmakuSourceChanged(@Nullable Uri uri) {
+        default void onDanmakuSourceChanged(Uri uri) {
         }
 
         default void onDanmakuConfigChanged(DanmakuConfig config) {
@@ -629,6 +623,16 @@ public class PlaybackService extends MediaLibraryService implements MediaLibrary
     }
 
     public interface NavigationCallback {
+
+        default boolean isExternalPlaybackActive() {
+            return false;
+        }
+
+        default void onPlay() {
+        }
+
+        default void onPause() {
+        }
 
         default void onPrev() {
         }

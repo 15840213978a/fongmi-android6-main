@@ -1,17 +1,13 @@
 package com.fongmi.android.tv.player.engine;
 
-import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
-import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.ui.PlayerView;
 
 import com.fongmi.android.tv.bean.Sub;
 import com.fongmi.android.tv.player.effect.PlayerEffect;
 import com.fongmi.android.tv.player.media.PlaySpec;
-
-import java.util.List;
 
 public interface PlayerEngine {
 
@@ -20,10 +16,6 @@ public interface PlayerEngine {
 
     Type getType();
 
-    default boolean needsRebuild() {
-        return false;
-    }
-
     Player getPlayer();
 
     int getAudioChannelCount();
@@ -31,6 +23,29 @@ public interface PlayerEngine {
     void release();
 
     void setDecode(int decode);
+
+    default void bindPlayerView(PlayerView view) {
+    }
+
+    default boolean isIsoNavigationPlayback() {
+        return false;
+    }
+
+    default boolean hasDiscMenu() {
+        return false;
+    }
+
+    default boolean isDiscMenuActive() {
+        return false;
+    }
+
+    default boolean sendDiscMenuAction(String action) {
+        return false;
+    }
+
+    default boolean sendDiscMenuPointer(float x, float y, boolean activate) {
+        return false;
+    }
 
     default PlayerEffect getEffect() {
         return PlayerEffect.NONE;
@@ -44,19 +59,9 @@ public interface PlayerEngine {
     default void clearPreload() {
     }
 
-    default void bindPlayerView(PlayerView playerView) {
-    }
-
     void stop();
 
-    default void applySubtitleStyle() {
-    }
-
-    default SecondarySubtitleState getSecondarySubtitleState() {
-        return SecondarySubtitleState.EMPTY;
-    }
-
-    default void setSecondarySubtitleSelection(@Nullable TrackSelectionOverride selection) {
+    default void setSubtitleStyle() {
     }
 
     default boolean addSubtitle(Sub sub) {
@@ -76,14 +81,5 @@ public interface PlayerEngine {
     enum Type {
         EXO,
         MPV
-    }
-
-    record SecondarySubtitleState(@Nullable TrackSelectionOverride primarySelection, @Nullable TrackSelectionOverride explicitSelection, List<TrackSelectionOverride> secondaryCandidates, boolean secondaryPromotedToPrimary) {
-
-        public static final SecondarySubtitleState EMPTY = new SecondarySubtitleState(null, null, List.of(), false);
-
-        public SecondarySubtitleState {
-            secondaryCandidates = List.copyOf(secondaryCandidates);
-        }
     }
 }

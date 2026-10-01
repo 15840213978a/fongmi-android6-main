@@ -12,14 +12,9 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.os.HandlerCompat;
 
-import com.fongmi.android.tv.setting.ProxySetting;
-import com.fongmi.android.tv.setting.Setting;
-import com.fongmi.android.tv.utils.NativeCompat;
 import com.fongmi.android.tv.utils.Notify;
-import com.fongmi.android.tv.utils.PreviousProcessExitLogger;
 import com.fongmi.hook.Hook;
 import com.github.catvod.Init;
-import com.github.catvod.crawler.DebugLogStore;
 import com.google.gson.Gson;
 
 public class App extends Application implements Application.ActivityLifecycleCallbacks {
@@ -86,26 +81,8 @@ public class App extends Application implements Application.ActivityLifecycleCal
     @Override
     public void onCreate() {
         super.onCreate();
-        // Android 6 (API 23) 分支：libmpv.so 与它的 FFmpeg 栈是对着 android-24+ 编的，
-        // 会引用 API 24 才有的 bionic 符号（带 LIBC_N 版本节点），且 DT_NEEDED 里的
-        // libvulkan.so 在 API 23 上根本不存在。必须在任何播放器被创建之前把垫片和
-        // vulkan 桩准备好，否则 MPV 会静默不可用（不崩、日志无痕）。
-        // API 24 及以上是空操作。见 utils/NativeCompat.java。
-        NativeCompat.ensure(this);
         Notify.createChannel();
         registerActivityLifecycleCallbacks(this);
-        // 调试日志 / 壳代理（从 webhtv 移植，见 setting/Setting.java 与 setting/ProxySetting.java）。
-        // 顺序有讲究：
-        //   1) 先把上次的开关读回来（日志总开关落在 Prefers 里）；
-        //   2) 只有开着才记环境信息、才回看上一条进程退出原因 —— 否则这段本身就不该产生任何日志；
-        //   3) 壳代理规则在最后 apply，让已经存下来的配置在启动时就生效（含踢掉旧连接）。
-        // PreviousProcessExitLogger 只在 API 30+ 真正查询，API 23 上是空操作。
-        DebugLogStore.restoreEnabled();
-        if (DebugLogStore.isEnabled()) {
-            Setting.logDebugEnvironment("restore");
-            PreviousProcessExitLogger.log(this);
-        }
-        ProxySetting.apply();
     }
 
     @Override

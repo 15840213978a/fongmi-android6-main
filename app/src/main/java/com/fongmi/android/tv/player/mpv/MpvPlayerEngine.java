@@ -13,33 +13,6 @@ import com.fongmi.android.tv.player.engine.PlayerEngine;
 import com.fongmi.android.tv.player.media.MediaItemFactory;
 import com.fongmi.android.tv.player.media.PlaySpec;
 
-// 2026-09-28 —— 副字幕（secondary subtitle）在本分支的 MPV 引擎上不再支持。
-//
-// 原因不是设计取舍，是依赖缺口：
-//   FongMi/TV 5.6.3 随包发的 app/libs/lib-*.aar（.gitignore 里是 `lib-*.aar`，未入 Git）
-//   来自一个**比公开的 FongMi/media 更新的修订**。公开的
-//   FongMi/media@release-1.11.0-fongmi 里，libraries/mpvplayer 的 MpvPlayer /
-//   MpvSubtitleOptions 没有这套 API（已用 GitHub 原文与本地检出逐字核对，两边一致）：
-//       MpvPlayer.getPrimaryTextTrackSelectionOverride()
-//       MpvPlayer.getSecondaryTextTrackSelectionOverride()
-//       MpvPlayer.getSecondaryTextTrackSelectionOverrides()
-//       MpvPlayer.isSecondaryTextTrackSuppressed()
-//       MpvPlayer.setSecondaryTextTrackSelectionOverride(TrackSelectionOverride)
-//       MpvPlayer.resetSecondaryTextTrackSelection()
-//       MpvPlayer.setSecondaryTextTrackAutoSelectionEnabled(boolean)
-//
-// 这里不写替身实现，而是让 MPV 引擎退回 PlayerEngine 的默认实现
-// （getSecondarySubtitleState() -> SecondarySubtitleState.EMPTY，
-//   setSecondarySubtitleSelection() -> 空操作）。接口本来就为"不支持的引擎"留了这个口子，
-//   所以这是框架内的一等状态，不是临时补丁。
-//
-// 影响边界（说清楚）：
-//   - 只影响 MPV 引擎。Exo 引擎的副字幕由 app 源码自己实现
-//     （ExoSubtitleController -> androidx.media3.exoplayer.libass.LibassSubtitleController），
-//     完全不受影响。
-//   - 用户仍可在自己的 mpv.conf 里写 `secondary-sid` / `secondary-sub-pos`：
-//     MpvUtil.getManagedOptionNames() 把这两个选项名保留在 App 管理清单里，
-//     MpvConfigFile 会把它们从用户配置里透传给 mpv。
 public class MpvPlayerEngine implements PlayerEngine, Player.Listener {
 
     private final MpvErrorMessageProvider provider;
@@ -70,6 +43,31 @@ public class MpvPlayerEngine implements PlayerEngine, Player.Listener {
     }
 
     @Override
+    public boolean isIsoNavigationPlayback() {
+        return player.canOpenDiscMenu();
+    }
+
+    @Override
+    public boolean hasDiscMenu() {
+        return player.canOpenDiscMenu();
+    }
+
+    @Override
+    public boolean isDiscMenuActive() {
+        return player.isDiscMenuActive();
+    }
+
+    @Override
+    public boolean sendDiscMenuAction(String action) {
+        return player.sendDiscNav(action);
+    }
+
+    @Override
+    public boolean sendDiscMenuPointer(float x, float y, boolean activate) {
+        return player.sendDiscNavPointer(x, y, activate);
+    }
+
+    @Override
     public int getAudioChannelCount() {
         return player.getAudioChannelCount();
     }
@@ -87,15 +85,16 @@ public class MpvPlayerEngine implements PlayerEngine, Player.Listener {
     }
 
     @Override
-    public void applySubtitleStyle() {
-        MpvUtil.applySubtitleStyle(player);
+    public void setSubtitleStyle() {
+        MpvUtil.setSubtitleStyle(player);
     }
 
     @Override
     public boolean addSubtitle(Sub sub) {
         if (sub == null || sub.isEmpty() || player.getCurrentMediaItem() == null) return false;
         if (player.getPlaybackState() == Player.STATE_IDLE || player.getPlaybackState() == Player.STATE_ENDED) return false;
-        return player.addSubtitle(MediaItemFactory.buildSubConfig(sub));
+        player.addSubtitle(MediaItemFactory.buildSubConfig(sub));
+        return true;
     }
 
     @Override

@@ -13,8 +13,6 @@ plugins {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // 本地托管的 fongmi media3 fork + nextlib-media3ext（从 webhtv 移植）
-        maven { url = uri("$rootDir/third_party/maven") }
         mavenCentral()
         google()
         flatDir { dirs "$rootDir/app/libs" }
@@ -24,18 +22,7 @@ dependencyResolutionManagement {
 
 include ':app'
 include ':catvod'
-// Android 6 (API 23) 分支的 Python 支持：**不再使用 com.chaquo.python 插件**。
-//   Chaquopy 17 硬要求 minSdk>=24；唯一支持 API 21 的 15.0.1 在 Gradle 9 上无法加载 ——
-//   ① org.gradle.util.VersionNumber 已被 Gradle 9 移除（可 shim）；
-//   ② Gradle 9 禁止向 buildscript 配置容器加配置（Cannot mutate configuration container
-//      for buildscript ... using create(String)）—— 架构级限制，shim 无解。
-// 改为：由影子工程（.gradle-user/chaquopy-shadow/，Gradle 8.7 + AGP 8.5.2 + Chaquopy 15.0.1
-// + Python 3.10 + minSdk 24）预先构建好运行时资产，再以普通文件放进 :chaquo 模块：
-//   chaquo/src/main/assets/chaquopy/**   资产（stdlib/requirements/bootstrap/app .imy）
-//   chaquo/src/main/jniLibs/<abi>/*.so   原生库（libpython3.10.so 等）
-//   chaquo/libs/chaquopy_java-15.0.1.jar Java 运行时
-// 于是 :chaquo 只是普通 Android library，主工程不需要任何 Chaquopy 插件。
-// 重新生成资产的步骤见 .gradle-user/chaquopy-routeB/（shadow_build.sh + audit_chaquopy.sh）。
 include ':chaquo'
+include ':nodejs'
 include ':quickjs'
 rootProject.name = "TV"

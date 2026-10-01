@@ -38,17 +38,17 @@ public class ExoMediaSourceFactory implements MediaSource.Factory {
     private static Cache cache;
 
     private final DefaultMediaSourceFactory defaultMediaSourceFactory;
-    private final LibassPlaybackSession libassPlaybackSession;
-
+    private final LibassPlaybackSession libassSession;
     private HttpDataSource.Factory httpDataSourceFactory;
     private DataSource.Factory dataSourceFactory;
+    private ExtractorsFactory extractorsFactory;
 
-    private ExoMediaSourceFactory(LibassPlaybackSession libassPlaybackSession) {
-        this.libassPlaybackSession = libassPlaybackSession;
-        this.defaultMediaSourceFactory = new DefaultMediaSourceFactory(getDataSourceFactory(), createDefaultExtractorsFactory());
+    public ExoMediaSourceFactory(LibassPlaybackSession libassSession) {
+        this.libassSession = libassSession;
+        defaultMediaSourceFactory = new DefaultMediaSourceFactory(getDataSourceFactory(), getExtractorsFactory());
     }
 
-    static MediaSourceFactorySupplier supplier(LibassPlaybackSession libassPlaybackSession) {
+    static MediaSourceFactorySupplier supplier(LibassPlaybackSession libassSession) {
         return new MediaSourceFactorySupplier() {
             @NonNull
             @Override
@@ -64,7 +64,7 @@ public class ExoMediaSourceFactory implements MediaSource.Factory {
 
             @Override
             public MediaSource.Factory get() {
-                return new ExoMediaSourceFactory(libassPlaybackSession);
+                return new ExoMediaSourceFactory(libassSession);
             }
         };
     }
@@ -115,13 +115,18 @@ public class ExoMediaSourceFactory implements MediaSource.Factory {
     @Override
     public MediaSource createMediaSource(@NonNull MediaItem mediaItem) {
         getHttpDataSourceFactory().setDefaultRequestProperties(ExoUtil.extractHeaders(mediaItem));
-        if (!libassPlaybackSession.isAvailable()) return defaultMediaSourceFactory.createMediaSource(mediaItem);
-        LibassPlaybackSession.MediaComponents components = libassPlaybackSession.createMediaComponents(mediaItem, createDefaultExtractorsFactory());
-        return new DefaultMediaSourceFactory(getDataSourceFactory(), components.extractorsFactory).setSubtitleParserFactory(components.subtitleParserFactory).createMediaSource(mediaItem);
+        if (libassSession.isAvailable()) {
+            LibassPlaybackSession.MediaComponents components = libassSession.createMediaComponents(mediaItem, getExtractorsFactory());
+            return new DefaultMediaSourceFactory(getDataSourceFactory(), components.extractorsFactory)
+                    .setSubtitleParserFactory(components.subtitleParserFactory)
+                    .createMediaSource(mediaItem);
+        }
+        return defaultMediaSourceFactory.createMediaSource(mediaItem);
     }
 
-    private static ExtractorsFactory createDefaultExtractorsFactory() {
-        return new DefaultExtractorsFactory().setTsExtractorTimestampSearchBytes(TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES * 10);
+    private ExtractorsFactory getExtractorsFactory() {
+        if (extractorsFactory == null) extractorsFactory = new DefaultExtractorsFactory().setTsExtractorTimestampSearchBytes(TsExtractor.DEFAULT_TIMESTAMP_SEARCH_BYTES * 10);
+        return extractorsFactory;
     }
 
     private DataSource.Factory getDataSourceFactory() {
