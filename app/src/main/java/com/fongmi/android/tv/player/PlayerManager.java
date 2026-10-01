@@ -14,11 +14,10 @@ import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
-import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.Tracks;
 import androidx.media3.common.VideoSize;
-import androidx.media3.ui.PlayerView;
 import androidx.media3.ui.danmaku.DanmakuConfig;
+import androidx.media3.ui.PlayerView;
 
 import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.Constant;
@@ -31,9 +30,11 @@ import com.fongmi.android.tv.impl.ParseCallback;
 import com.fongmi.android.tv.player.effect.PlayerEffectManager;
 import com.fongmi.android.tv.player.effect.audio.AudioEffectBands;
 import com.fongmi.android.tv.player.engine.PlayerEngine;
-import com.fongmi.android.tv.player.engine.PlayerEngine.SecondarySubtitleState;
 import com.fongmi.android.tv.player.engine.PlayerEngineFactory;
 import com.fongmi.android.tv.player.media.PlaySpec;
+import com.fongmi.android.tv.player.mpv.MpvPlayerEngine;
+import com.fongmi.android.tv.player.mpv.MpvScriptSession;
+import com.fongmi.android.tv.player.mpv.MpvScripts;
 import com.fongmi.android.tv.player.parse.ParseJob;
 import com.fongmi.android.tv.player.track.TrackUtil;
 import com.fongmi.android.tv.setting.DanmakuSetting;
@@ -44,6 +45,8 @@ import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.ResUtil;
 import com.fongmi.android.tv.utils.Util;
 import com.google.common.net.HttpHeaders;
+
+import org.json.JSONException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -61,11 +64,13 @@ public class PlayerManager implements ParseCallback {
     private PlaySpec spec;
     private Player player;
 
+    private DanmakuConfig danmakuConfig;
     private long pendingStartPositionMs;
     private boolean danmakuEnabled;
     private boolean initTrack;
     private int retry;
     private int decode;
+    private float speedBeforePress = Float.NaN;
 
     public PlayerManager(Callback callback) {
         this.callback = callback;
@@ -74,11 +79,13 @@ public class PlayerManager implements ParseCallback {
         this.pendingStartPositionMs = C.TIME_UNSET;
         this.engine = PlayerEngineFactory.create(decode, listener);
         this.effects = new PlayerEffectManager(() -> engine);
+        this.danmakuConfig = DanmakuSetting.getConfig();
         this.danmakuEnabled = DanmakuSetting.isShow();
         this.player = engine.getPlayer();
     }
 
     public void release() {
+        endSpeedPress();
         App.removeCallbacks(runnable);
         if (player != null) player.removeListener(listener);
         if (engine != null) engine.release();
@@ -88,6 +95,47 @@ public class PlayerManager implements ParseCallback {
 
     public Player getPlayer() {
         return player;
+    }
+
+    public boolean isIsoNavigationPlayback() {
+        return engine != null && engine.isIsoNavigationPlayback();
+    }
+
+    public boolean hasDiscMenu() {
+        return engine != null && engine.hasDiscMenu();
+    }
+
+    public boolean isDiscMenuActive() {
+        return engine != null && engine.isDiscMenuActive();
+    }
+
+    public boolean sendDiscMenuAction(String action) {
+        return engine != null && engine.sendDiscMenuAction(action);
+    }
+
+    public boolean sendDiscMenuPointer(float x, float y, boolean activate) {
+        return engine != null && engine.sendDiscMenuPointer(x, y, activate);
+    }
+
+    public void bindPlayerView(@Nullable PlayerView view) {
+        if (engine != null) engine.bindPlayerView(view);
+    }
+
+    // Public Media3 has no MPV script bridge. Keep the settings readable until
+    // the matching optional player implementation is available.
+    public boolean runMpvScript(MpvScripts.Item item) {
+        return false;
+    }
+
+    public MpvScriptSession.Status getMpvScriptStatus(String id) {
+        return null;
+    }
+
+    public List<String> getMpvScriptBindings() throws JSONException {
+        return List.of();
+    }
+
+    public void reloadMpvScripts(boolean reloadStartupScripts, String reloadButtonId) {
     }
 
     private void setPlayer(Player player) {
@@ -298,6 +346,11 @@ public class PlayerManager implements ParseCallback {
         else startCurrent();
     }
 
+    public void setFormat(String format) {
+        if (spec != null) spec.setFormat(format);
+        startCurrent();
+    }
+
     public void selectChapter(MediaChapter chapter) {
         player.selectChapter(chapter);
     }
@@ -307,7 +360,8 @@ public class PlayerManager implements ParseCallback {
     }
 
     public void setDanmakuConfig(DanmakuConfig config) {
-        callback.onDanmakuConfigChanged(config);
+        danmakuConfig = config;
+        callback.onDanmakuConfigChanged(danmakuConfig);
     }
 
     public void setDanmakuEnabled(boolean enabled) {
@@ -316,16 +370,8 @@ public class PlayerManager implements ParseCallback {
         callback.onDanmakuEnabledChanged(danmakuEnabled);
     }
 
-    public void applySubtitleStyle() {
-        if (engine != null) engine.applySubtitleStyle();
-    }
-
-    public SecondarySubtitleState getSecondarySubtitleState() {
-        return engine == null ? SecondarySubtitleState.EMPTY : engine.getSecondarySubtitleState();
-    }
-
-    public void setSecondarySubtitleSelection(@Nullable TrackSelectionOverride selection) {
-        if (engine != null) engine.setSecondarySubtitleSelection(selection);
+    public void setSubtitleSettingStyle() {
+        if (engine != null) engine.setSubtitleStyle();
     }
 
     public void sendDanmaku(String text) {
@@ -336,6 +382,20 @@ public class PlayerManager implements ParseCallback {
         if (!player.isCommandAvailable(Player.COMMAND_SET_SPEED_AND_PITCH)) return getSpeed();
         player.setPlaybackParameters(player.getPlaybackParameters().withSpeed(SpeedSetting.clamp(speed)));
         return getSpeed();
+    }
+
+    public boolean startSpeedPress(float speed) {
+        if (player == null || !player.isCommandAvailable(Player.COMMAND_SET_SPEED_AND_PITCH)) return false;
+        if (Float.isNaN(speedBeforePress)) speedBeforePress = getSpeed();
+        setSpeed(speed);
+        return true;
+    }
+
+    public void endSpeedPress() {
+        if (Float.isNaN(speedBeforePress)) return;
+        float previous = speedBeforePress;
+        speedBeforePress = Float.NaN;
+        if (player != null) setSpeed(previous);
     }
 
     public float toggleSpeed() {
@@ -354,8 +414,8 @@ public class PlayerManager implements ParseCallback {
         effects.setSkipSilenceEnabled(enabled);
     }
 
-    public void setTrack(Track track) {
-        TrackUtil.setTrackSelection(player, track);
+    public void setTrack(List<Track> tracks) {
+        if (!tracks.isEmpty()) TrackUtil.setTrackSelection(player, tracks);
     }
 
     public void setVideoSetting(int preset) {
@@ -456,10 +516,6 @@ public class PlayerManager implements ParseCallback {
     public void clearPreload() {
         pendingPreload = null;
         if (engine != null) engine.clearPreload();
-    }
-
-    public void bindPlayerView(PlayerView playerView) {
-        if (engine != null) engine.bindPlayerView(playerView);
     }
 
     public void resetTrack() {
@@ -583,6 +639,12 @@ public class PlayerManager implements ParseCallback {
         notifyDanmakuSourceChanged();
     }
 
+    public void clearDanmaku() {
+        if (spec == null) return;
+        spec.clearDanmaku();
+        notifyDanmakuSourceChanged();
+    }
+
     public void addDanmaku(Danmaku item) {
         if (spec != null) spec.addDanmaku(item);
     }
@@ -617,7 +679,7 @@ public class PlayerManager implements ParseCallback {
 
         void onPlayerRebuild(Player newPlayer);
 
-        void onDanmakuSourceChanged(@Nullable Uri uri);
+        void onDanmakuSourceChanged(Uri uri);
 
         void onDanmakuConfigChanged(DanmakuConfig config);
 
@@ -664,9 +726,9 @@ public class PlayerManager implements ParseCallback {
         @Override
         public void onTracksChanged(@NonNull Tracks tracks) {
             if (tracks.isEmpty() || initTrack) return;
-            initTrack = true;
-            TrackUtil.setTrackSelection(player, Track.find(getKey()));
+            setTrack(Track.find(getKey()));
             callback.onTracksChanged();
+            initTrack = true;
         }
 
         @Override

@@ -30,13 +30,12 @@ import com.fongmi.android.tv.setting.PlayerSetting;
 import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.base.BaseActivity;
 import com.fongmi.android.tv.ui.dialog.ConfigDialog;
-import com.fongmi.android.tv.ui.dialog.DebugLogDialog;
+import com.fongmi.android.tv.ui.dialog.UpdateProxyDialog;
 import com.fongmi.android.tv.ui.dialog.DohDialog;
 import com.fongmi.android.tv.ui.dialog.HistoryDialog;
 import com.fongmi.android.tv.ui.dialog.LiveDialog;
 import com.fongmi.android.tv.ui.dialog.RestoreDialog;
 import com.fongmi.android.tv.ui.dialog.SiteDialog;
-import com.fongmi.android.tv.ui.dialog.UpdateProxyDialog;
 import com.fongmi.android.tv.utils.FileUtil;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.PermissionUtil;
@@ -88,14 +87,8 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
     private void setOtherText() {
         mBinding.dohText.setText(getDohList()[getDohIndex()]);
         mBinding.incognitoText.setText(Setting.getSwitch(Setting.isIncognito()));
-        mBinding.debugLogText.setText(Setting.getSwitch(Setting.isDebugLog()));
-        mBinding.sizeText.setText((size = ResUtil.getStringArray(R.array.select_size))[PlayerSetting.getSize()]);
         mBinding.updateProxyText.setText(getUpdateProxyText());
-    }
-
-    private String getUpdateProxyText() {
-        String proxy = Setting.getUpdateProxy();
-        return TextUtils.isEmpty(proxy) ? getString(R.string.setting_off) : proxy;
+        mBinding.sizeText.setText((size = ResUtil.getStringArray(R.array.select_size))[PlayerSetting.getSize()]);
     }
 
     private void setCacheText() {
@@ -127,7 +120,6 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
         mBinding.liveHome.setOnClickListener(this::onLiveHome);
         mBinding.wall.setOnLongClickListener(this::onWallEdit);
         mBinding.incognito.setOnClickListener(this::setIncognito);
-        mBinding.debugLog.setOnClickListener(this::setDebugLog);
         mBinding.vodHistory.setOnClickListener(this::onVodHistory);
         mBinding.liveHistory.setOnClickListener(this::onLiveHistory);
         mBinding.wallDefault.setOnClickListener(this::setWallDefault);
@@ -241,11 +233,11 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
         SettingDanmakuActivity.start(this);
     }
 
-    private void onVersion(View view) {
-        Updater.create().force().start(this);
+    private String getUpdateProxyText() {
+        String proxy = Setting.getUpdateProxy();
+        return TextUtils.isEmpty(proxy) ? getString(R.string.setting_off) : proxy;
     }
 
-    // 更新下载代理（URL 前缀）：点击弹输入框，落盘后刷新行文本。
     private void setUpdateProxy(View view) {
         UpdateProxyDialog.show(this);
     }
@@ -254,6 +246,10 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
     public void setUpdateProxy(String proxy) {
         Setting.putUpdateProxy(proxy);
         mBinding.updateProxyText.setText(getUpdateProxyText());
+    }
+
+    private void onVersion(View view) {
+        Updater.create().force().start(this);
     }
 
     private void setWallDefault(View view) {
@@ -275,15 +271,6 @@ public class SettingActivity extends BaseActivity implements ConfigListener, Sit
     private void setIncognito(View view) {
         Setting.putIncognito(!Setting.isIncognito());
         mBinding.incognitoText.setText(Setting.getSwitch(Setting.isIncognito()));
-    }
-
-    // 调试日志（从 webhtv 移植）：点击即开关；只在"刚打开"时弹对话框给地址，
-    // 关闭时不弹（否则会弹出一个地址已经不可用的窗口）。
-    private void setDebugLog(View view) {
-        Setting.putDebugLog(!Setting.isDebugLog());
-        mBinding.debugLogText.setText(Setting.getSwitch(Setting.isDebugLog()));
-        if (!Setting.isDebugLog()) return;
-        DebugLogDialog.show(this);
     }
 
     private void setSize(View view) {

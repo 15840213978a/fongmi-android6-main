@@ -1,0 +1,17 @@
+[
+  ".gitignore",
+  "app/build.gradle",
+  "app/src/leanback/java/com/fongmi/android/tv/ui/activity/SettingActivity.java",
+  "app/src/leanback/res/layout/activity_setting.xml",
+  "app/src/main/java/com/fongmi/android/tv/Updater.java",
+  "app/src/main/java/com/fongmi/android/tv/impl/UpdateProxyListener.java",
+  "app/src/main/java/com/fongmi/android/tv/setting/Setting.java",
+  "app/src/main/java/com/fongmi/android/tv/ui/dialog/UpdateProxyDialog.java",
+  "app/src/main/java/com/fongmi/android/tv/utils/Github.java",
+  "app/src/main/res/layout/dialog_update_proxy.xml",
+  "app/src/main/res/values-zh-rCN/strings.xml",
+  "app/src/main/res/values-zh-rTW/strings.xml",
+  "app/src/main/res/values/strings.xml",
+  "app/src/mobile/java/com/fongmi/android/tv/ui/fragment/SettingFragment.java",
+  "app/src/mobile/res/layout/fragment_setting.xml"
+]

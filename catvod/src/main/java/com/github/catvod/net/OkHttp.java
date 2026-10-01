@@ -2,17 +2,12 @@ package com.github.catvod.net;
 
 import android.annotation.SuppressLint;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.collection.ArrayMap;
 
-import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.net.interceptor.AuthInterceptor;
 import com.github.catvod.net.interceptor.RequestInterceptor;
 import com.github.catvod.net.interceptor.ResponseInterceptor;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Map;
@@ -24,13 +19,10 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import okhttp3.Call;
-import okhttp3.Connection;
-import okhttp3.EventListener;
 import okhttp3.FormBody;
 import okhttp3.Headers;
 import okhttp3.HttpUrl;
 import okhttp3.OkHttpClient;
-import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
@@ -83,23 +75,6 @@ public class OkHttp {
         return get().selector = new OkProxySelector();
     }
 
-    // 壳代理（从 webhtv 移植）：规则变更后必须把已有的 keep-alive 连接全部踢掉，
-    // 否则旧连接会继续走变更前的代理/直连路径，表现为"改了规则但没生效"。
-    // 放到独立线程里做，避免在 UI 线程上等连接池回收。
-    public static void closeIdleConnections() {
-        new Thread(OkHttp::evictIdleConnections, "okhttp-evict-idle").start();
-    }
-
-    private static synchronized void evictIdleConnections() {
-        try {
-            if (get().client != null) get().client.connectionPool().evictAll();
-            if (get().player != null) get().player.connectionPool().evictAll();
-            SpiderDebug.log("proxy", "connection pool evicted");
-        } catch (Throwable e) {
-            SpiderDebug.log("proxy", "connection pool evict failed error=%s", e.getMessage());
-        }
-    }
-
     public static synchronized OkHttpClient client() {
         if (get().client != null) return get().client;
         return get().client = getBuilder().build();
@@ -107,11 +82,7 @@ public class OkHttp {
 
     public static synchronized OkHttpClient player() {
         if (get().player != null) return get().player;
-        // 播放链路单独挂一个事件监听，把"到底走了代理还是直连、连到哪、什么协议"记进调试日志。
-        // 开关关闭时用 EventListener.NONE，零开销。
-        return get().player = getBuilder()
-                .eventListenerFactory(call -> SpiderDebug.isEnabled() ? new DebugEventListener() : EventListener.NONE)
-                .build();
+        return get().player = getBuilder().build();
     }
 
     public static OkHttpClient client(long timeout) {
@@ -250,78 +221,6 @@ public class OkHttp {
                 return new X509Certificate[0];
             }
         };
-    }
-
-    // 从 webhtv 原样移植：播放器 okhttp 的链路事件，日志 tag = okhttp-player。
-    // 所有字段都过 OkHttpLogPolicy 脱敏（host 只留哈希、path 只留扩展名），
-    // 避免把站源地址/令牌写进可导出的日志文件。
-    private static class DebugEventListener extends EventListener {
-
-        private final long startNs;
-
-        private DebugEventListener() {
-            this.startNs = System.nanoTime();
-        }
-
-        @Override
-        public void callStart(@NonNull Call call) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "start", "method=" + call.request().method() + OkHttpLogPolicy.requestMetadata(call.request().headers()));
-        }
-
-        @Override
-        public void connectStart(@NonNull Call call, @NonNull InetSocketAddress inetSocketAddress, @NonNull java.net.Proxy proxy) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "connectStart", "host=" + OkHttpLogPolicy.redactHost(inetSocketAddress.getHostString()) + ", proxyType=" + proxy.type());
-        }
-
-        @Override
-        public void connectEnd(@NonNull Call call, @NonNull InetSocketAddress inetSocketAddress, @NonNull java.net.Proxy proxy, @Nullable Protocol protocol) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "connectEnd", "host=" + OkHttpLogPolicy.redactHost(inetSocketAddress.getHostString()) + ", proxyType=" + proxy.type() + ", protocol=" + protocol);
-        }
-
-        @Override
-        public void connectFailed(@NonNull Call call, @NonNull InetSocketAddress inetSocketAddress, @NonNull java.net.Proxy proxy, @Nullable Protocol protocol, @NonNull IOException ioe) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "connectFailed", "host=" + OkHttpLogPolicy.redactHost(inetSocketAddress.getHostString()) + ", proxyType=" + proxy.type() + ", protocol=" + protocol + ", error=" + error(ioe));
-        }
-
-        @Override
-        public void connectionAcquired(@NonNull Call call, @NonNull Connection connection) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "connectionAcquired", "protocol=" + connection.protocol() + ", proxyType=" + connection.route().proxy().type());
-        }
-
-        @Override
-        public void responseHeadersEnd(@NonNull Call call, @NonNull Response response) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "response", "code=" + response.code() + ", message=" + response.message() + ", contentLength=" + response.header("Content-Length") + ", contentType=" + response.header("Content-Type") + ", contentRange=" + response.header("Content-Range"));
-        }
-
-        @Override
-        public void callEnd(@NonNull Call call) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "end", "elapsedMs=" + elapsedMs());
-        }
-
-        @Override
-        public void callFailed(@NonNull Call call, @NonNull IOException ioe) {
-            if (!SpiderDebug.isEnabled()) return;
-            log(call, "failed", "elapsedMs=" + elapsedMs() + ", error=" + error(ioe));
-        }
-
-        private void log(Call call, String event, String message) {
-            SpiderDebug.log("okhttp-player", "%s url=%s %s", event, OkHttpLogPolicy.redactUrl(call.request().url()), message);
-        }
-
-        private long elapsedMs() {
-            return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs);
-        }
-
-        private String error(Throwable error) {
-            return OkHttpLogPolicy.errorChain(error);
-        }
     }
 
     public void clear() {

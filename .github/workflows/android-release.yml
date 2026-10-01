@@ -1,406 +1,523 @@
-name: Android Release
-
-# =============================================================================
-# fongmi-android6 —— Android 6 (API 23) 分支的在线打包
-#
-# 产出 4 个 release APK（2 手机 + 2 电视，每个各含 arm64-v8a / armeabi-v7a）：
-#   leanback-arm64_v8a-b6.apk      leanback-armeabi_v7a-b6.apk
-#   mobile-arm64_v8a-b6.apk        mobile-armeabi_v7a-b6.apk
-#
-# 包名：com.fongmi.android.tv.b6（靠 -PcoexistSuffix 加后缀，不改包名重打包），
-# 可与上游 webhtv（.tv）和上一代 webhtv-android6（.tv.a6）三者并存。
-#
-# ⚠ 签名是必需的：app/build.gradle 的 release 变体强制走 signingConfigs.release，
-#   而 AbiApkPackaging 还会用 apksigner 二次对齐+签名，signingConfig 为空会直接 NPE。
-#   因此必须在仓库 Secrets 里配好下面三个，否则本工作流会**显式报错退出**：
-#     RELEASE_KEYSTORE_BASE64   keystore 的 base64（单行）
-#     RELEASE_KEY_ALIAS         key alias
-#     RELEASE_STORE_PASSWORD    store 密码（本工程 key 密码与 store 密码相同）
-# =============================================================================
+name: Build 5.6.8 APKs
+# Player dependencies are pinned below for reproducible four-APK builds.
+# FongMi 5.6.8 EXO navigation build: restore native chain and verify navigation state.
 
 on:
+  push:
+    branches: [ main, upgrade/5.6.8-android7 ]
   workflow_dispatch:
     inputs:
-      app_id_suffix:
-        description: "共存后缀。留空=b6。只改 applicationId，不改 Java 类名，因此内置的 libplayer.so 仍能解析它的 JNI 回调类。填 b6 或 .b6 均可（会自动补点）"
-        required: false
-        default: b6
-        type: string
-      release_tag:
-        description: "Release tag。留空 = v<versionName>-yyyyMMddHHmm 自动生成"
-        required: false
-        type: string
-      release_notes:
-        description: "Release 说明。用 \\n 表示换行"
-        required: false
-        type: string
-      prerelease:
-        description: "标记为 pre-release"
-        required: false
-        default: false
+      stable_release:
+        description: 'Publish stable (main only, after device testing)'
         type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: read
 
-env:
-  TZ: Asia/Shanghai
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  release:
-    name: Build and publish
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
-      - name: Checkout
+      - name: Checkout source code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      # gradle/gradle-daemon-jvm.properties 是给**本地开发者**用的 JVM 选择文件，
-      # 内容是 toolchainVendor=JETBRAINS + toolchainVersion=21 + 一组 foojay 下载地址。
-      # 在 CI 里它是纯负担：我们刚刚用 setup-java 明确装好了 Temurin 21，
-      # 留着它会让 Gradle 认为"不满足条件"，转头去 foojay 再下一个 JetBrains JDK
-      # （约 200MB，且依赖 foojay 的直链长期有效）。
-      # 删掉后 Gradle 直接用启动它的那个 JVM，即 setup-java 装的 Temurin 21，行为确定。
-      # 注意：只删 CI 工作区里的副本，仓库里的文件不动，本地开发不受影响。
-      - name: Drop local-only daemon JVM criteria
-        run: rm -f gradle/gradle-daemon-jvm.properties
-
-      # 不用 android-actions/setup-android@v3：它在内部执行 `sdkmanager tools`，
-      # 而 `tools` 这个包已从 SDK 仓库移除 ⇒ 报
-      #     Warning: Failed to find package 'tools'
-      #     Error: The process '.../sdkmanager' failed with exit code 1
-      # （2026-09-29 run 36532372206 实测，15 秒即失败。）
-      # ubuntu-latest runner 本身就预装了 Android SDK，直接用它自带的 sdkmanager 即可，
-      # 少一个第三方 action 就少一个故障点。
-      #
-      # 要装的包必须与工程对齐，否则 Gradle 配置期就会失败：
-      #   build-tools 36.0.0     —— AGP 9.3.1 的 MIN/DEFAULT_BUILD_TOOLS_REVISION
-      #                             （已从 builder-9.3.1.jar 的 ToolsRevisionUtils 常量池核实）
-      #   platforms;android-37.0 —— compileSdk/targetSdk = 37（注意包名带 .0）
-      #   ndk 29.0.14206865      —— app/build.gradle 的 ndkVersion（编 libtvshim.so 垫片）
-      #   cmake 3.22.1           —— app/build.gradle 的 cmake version
-      - name: Set up Android SDK
+      - name: Import the reviewed 5.6.8 source once
+        env:
+          UPGRADE_BRANCH: ${{ github.ref_name }}
         run: |
-          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
-            echo "::error title=Android SDK not found::runner 上既没有 ANDROID_HOME 也没有 ANDROID_SDK_ROOT，或目录不存在"
-            exit 1
-          fi
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "SDK 目录 = $SDK"
-          ls -1 "$SDK" || true
-
-          SDKMGR="$(command -v sdkmanager || true)"
-          if [ -z "$SDKMGR" ]; then
-            # runner 上 cmdline-tools 的目录名是版本号（实测 16.0）而不是 latest，
-            # 所以不能写死 cmdline-tools/latest/bin，用 find 兜底。
-            SDKMGR="$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort | tail -1)"
-          fi
-          if [ -z "$SDKMGR" ]; then
-            echo "::error title=sdkmanager not found::在 $SDK/cmdline-tools 下找不到 sdkmanager"
-            exit 1
-          fi
-          echo "sdkmanager = $SDKMGR"
-          echo "SDKMGR=$SDKMGR" >> "$GITHUB_ENV"
-          "$SDKMGR" --version
-
-      - name: Install Android packages
-        run: |
-          # 自动接受 SDK 许可，否则 sdkmanager 会卡在交互式 "Accept? (y/N)"
-          yes | "$SDKMGR" "platform-tools" "platforms;android-37.0" "build-tools;36.0.0" "ndk;29.0.14206865" "cmake;3.22.1"
-          echo "--- 安装结果 ---"
-          ls -1 "$ANDROID_HOME/build-tools" || true
-          ls -1 "$ANDROID_HOME/platforms" || true
-          ls -1 "$ANDROID_HOME/ndk" || true
-          # 断言关键组件真的落地了，避免后面报出难懂的错
-          for D in "build-tools/36.0.0" "platforms/android-37.0" "ndk/29.0.14206865"; do
-            if [ ! -d "$ANDROID_HOME/$D" ]; then
-              echo "::error title=SDK component missing::缺 $ANDROID_HOME/$D"
+          set -euo pipefail
+          if [ ! -f .upstream-568 ]; then
+            [ "$UPGRADE_BRANCH" = "upgrade/5.6.8-android7" ] || {
+              echo "::error::Initial source import is restricted to the upgrade branch"
               exit 1
-            fi
-          done
-          echo "关键 SDK 组件齐全"
-
-      - name: Resolve release metadata
-        id: meta
-        run: |
-          VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle | head -1)"
-          VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle | head -1)"
-          if [ -z "$VERSION_NAME" ]; then
-            echo "::error title=Cannot read versionName::app/build.gradle 里没解析到 versionName"
-            exit 1
+            }
+            SOURCE_DIR="$RUNNER_TEMP/upstream-568"
+            git clone --no-checkout https://github.com/15840213978a/fongmi.git "$SOURCE_DIR"
+            git -C "$SOURCE_DIR" checkout --detach 0b9835bd0c5350f47476c05377545d6e9134614c
+            python3 scripts/import_568.py "$SOURCE_DIR"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Upgrade to pinned FongMi 5.6.8 source and Android 7 baseline'
+            git push origin "HEAD:refs/heads/$UPGRADE_BRANCH"
           fi
+          test "$(cat .upstream-568)" = '0b9835bd0c5350f47476c05377545d6e9134614c'
+          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "Built source commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
 
-          # ---- 共存后缀归一化 ----------------------------------------------
-          # app/build.gradle 把 -PcoexistSuffix 的值**原样**喂给 applicationIdSuffix，
-          # 不做补点。所以这里统一补上前导点：b6 -> .b6，.b6 -> .b6。
-          # 文件名后缀由 AbiApkPackaging.apkSuffix() 去掉前导点推导（.b6 -> -b6）。
-          SUFFIX_RAW="$(printf '%s' '${{ inputs.app_id_suffix }}' | tr -cd 'A-Za-z0-9._-')"
-          if [ -n "$SUFFIX_RAW" ]; then
-            case "$SUFFIX_RAW" in
-              .*) COEXIST_SUFFIX="$SUFFIX_RAW" ;;
-              *)  COEXIST_SUFFIX=".$SUFFIX_RAW" ;;
-            esac
-            # 文件名后缀与包名后缀同源，只是去掉前导点：.b6 -> -b6
-            APK_SUFFIX="-${COEXIST_SUFFIX#.}"
-            APP_ID="com.fongmi.android.tv${COEXIST_SUFFIX}"
-          else
-            COEXIST_SUFFIX=""
-            APK_SUFFIX=""
-            APP_ID="com.fongmi.android.tv"
-          fi
-
-          TAG="${{ inputs.release_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="v${VERSION_NAME}-$(date +%Y%m%d%H%M)"
-          fi
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "::error title=Release tag exists::$TAG 已存在，换个 tag"
-            exit 1
-          fi
-
-          {
-            echo "version_name=$VERSION_NAME"
-            echo "version_code=$VERSION_CODE"
-            echo "tag=$TAG"
-            echo "title=${TAG#v}"
-            echo "short_sha=$(git rev-parse --short=7 HEAD)"
-            echo "coexist_suffix=$COEXIST_SUFFIX"
-            echo "apk_suffix=$APK_SUFFIX"
-            echo "app_id=$APP_ID"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "包名 = $APP_ID"
-          echo "tag  = $TAG"
-
-      # 必须在任何 Gradle 调用之前完成：app/build.gradle 在**配置期**无条件读取
-      # rootProject/local.properties，文件不存在会直接 FileNotFoundException。
-      - name: Configure release signing
-        env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-        run: |
-          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$RELEASE_KEY_ALIAS" ] || [ -z "$RELEASE_STORE_PASSWORD" ]; then
-            echo "::error title=Release signing not configured::请在仓库 Settings > Secrets and variables > Actions 里配置 RELEASE_KEYSTORE_BASE64 / RELEASE_KEY_ALIAS / RELEASE_STORE_PASSWORD"
-            exit 1
-          fi
-          mkdir -p app/signing
-          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > app/signing/release.jks
-          {
-            echo "storeFile=$GITHUB_WORKSPACE/app/signing/release.jks"
-            echo "keyAlias=$RELEASE_KEY_ALIAS"
-            echo "storePassword=$RELEASE_STORE_PASSWORD"
-            echo "keyPassword=$RELEASE_STORE_PASSWORD"
-          } > local.properties
-          echo "Release signing configured"
-
-      - name: Build four release APKs
-        run: |
-          chmod +x ./gradlew
-          rm -rf Release/apk
-          # 构建前的环境观测（只读，不参与构建）。
-          # 2026-09-30 的两次 run 都在 packageXxxRelease 上失败/挂起，需要区分
-          # "磁盘写满 / 内存不足 / worker 并发" 这几种可能 —— 光看 Task 日志区分不了。
-          echo "--- 磁盘 ---"; df -h "$GITHUB_WORKSPACE" /tmp || true
-          echo "--- 内存 ---"; free -m || true
-          echo "--- CPU ---";  nproc || true
-          # :app:assembleRelease 一次覆盖 2 flavor × 2 ABI = 4 个 APK。
-          # （用 :app: 限定，避免根级 assembleRelease 顺带把 catvod/quickjs 的 release 变体也编一遍。）
-          # ABI splits 由 buildSrc 的 AbiApkPackaging 无条件开启，universalApk=false。
-          #
-          # --stacktrace：run 36674838783 只报
-          #   "A failure occurred while executing ...IncrementalSplitterRunnable"，
-          #   **连 Caused by 都没有** ⇒ 根因被 AGP 吞了。
-          #   那条 transform 就是 buildSrc 的 FinalizeApksTask（zipalign + apksigner）。
-          #   注意：光靠 --stacktrace 还不够 —— 真正把现场留下来的是 FinalizeApksTask
-          #   里新加的 dumpFailure()（重抛前把 abi / 文件大小 / 磁盘 / 堆 / 完整 cause 链
-          #   打到 stderr）。
-          #
-          # 用 tee 而不是 `> file 2>&1`：重定向会让整个构建在 CI 日志里一行不输出，
-          # 反而比改之前更难排查。tee 既保留 Task 级进度，又把完整日志留在
-          # /tmp/gradle-build.log 供失败时上传。
-          #
-          # 刻意不开 --info：它对 8 分钟的构建会产生大量输出，有撑爆单 job 日志上限的
-          # 风险。zipalign / apksigner 自己的报错已经由 FinalizeApksTask 直接转发到
-          # 进程 stderr（见 align() / sign() 里的 errorOutput），不需要 --info。
-          #
-          # pipefail：GitHub Actions 的 bash 默认带 -eo pipefail，tee 不会吞掉 gradlew
-          # 的退出码，失败时这一步照常变红。
-          set -o pipefail
-          ./gradlew :app:assembleRelease \
-            -PcoexistSuffix='${{ steps.meta.outputs.coexist_suffix }}' \
-            --no-daemon \
-            --stacktrace \
-            2>&1 | tee /tmp/gradle-build.log
-          echo "构建成功。完整 Gradle 日志在 /tmp/gradle-build.log"
-
-      # 构建失败时把完整 Gradle 日志传上来。
-      # 之所以需要：失败现场在 runner 上，job 一结束就没了；而本地无法复现
-      # （release 用的 keystore 来自 Secrets，沙箱里也跑不通 release）。
-      # 只失败时上传 ⇒ 成功时零额外开销。
-      - name: Upload Gradle log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - name: Checkout matching FongMi Media3 source
+        uses: actions/checkout@v4
         with:
-          name: gradle-build-log-${{ github.run_id }}
-          path: /tmp/gradle-build.log
-          if-no-files-found: ignore
-          retention-days: 7
+          repository: FongMi/media
+          ref: 3c2cbe8ac742c2fe15eff52f03eeb3b1b648848d
+          path: media3
+          fetch-depth: 1
 
-      # 断言：必须正好 4 个 APK，且 2 flavor × 2 ABI 齐全。少一个就大声失败，
-      # 不允许"构建成功但产物不全"这种假通过。
-      - name: Collect and assert artifacts
+      - name: Use GitHub mirrors for pinned libass dependencies
         run: |
-          rm -rf dist
-          mkdir -p dist
-          cp Release/apk/*.apk dist/ 2>/dev/null || true
-          COUNT="$(ls -1 dist/*.apk 2>/dev/null | wc -l)"
-          echo "收集到 $COUNT 个 APK："
-          ls -lh dist/ || true
-          if [ "$COUNT" != "4" ]; then
-            echo "::error title=Unexpected APK count::期望 4 个 APK，实际 $COUNT 个"
+          # Preserve the exact gitlink commits while avoiding GitLab 503/504 outages.
+          git config --global url."https://github.com/fontconfig/fontconfig".insteadOf https://gitlab.freedesktop.org/fontconfig/fontconfig
+          git config --global url."https://github.com/freetype/freetype".insteadOf https://gitlab.freedesktop.org/freetype/freetype
+
+      - name: Checkout original FongMi libass source and its native submodules
+        uses: actions/checkout@v4
+        with:
+          repository: FongMi/media
+          ref: 9dae39e9689ee305c83f94bd11cf3bcecb9d6171
+          path: media3-ass
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Install Python 3.10
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y python3.10 python3.10-dev python3.10-venv autoconf automake autopoint gettext gperf libtool ninja-build pkg-config
+          python3.10 --version
+
+      - name: Ensure Android SDK 37
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "${SDKMANAGER:-}" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under $SDK_ROOT"
+            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print 2>/dev/null || true
             exit 1
           fi
-          MISSING=""
-          for DEV in leanback mobile; do
-            for ABIF in arm64_v8a armeabi_v7a; do
-              F="dist/${DEV}-${ABIF}${{ steps.meta.outputs.apk_suffix }}.apk"
-              if [ ! -f "$F" ]; then
-                MISSING="$MISSING $F"
-              fi
-            done
-          done
-          if [ -n "$MISSING" ]; then
-            echo "::error title=Missing APK::缺少:$MISSING"
+
+          echo "Using sdkmanager: $SDKMANAGER"
+          echo "== Android 37 packages visible on preview/canary channels =="
+          "$SDKMANAGER" --list --channel=3 | grep -E 'platforms;android-37|build-tools;37\.' || true
+
+          set +o pipefail
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          set -o pipefail
+
+          "$SDKMANAGER" --channel=3 \
+            "platforms;android-37.0" \
+            "platforms;android-36" \
+            "build-tools;37.0.0" \
+            "cmake;3.22.1" \
+            "ndk;29.0.14206865" \
+            "platform-tools"
+
+          test -f "$SDK_ROOT/platforms/android-37.0/android.jar" || {
+            echo "::error::Android API 37.0 platform was not installed correctly"
+            find "$SDK_ROOT/platforms" -maxdepth 2 -type f -name android.jar -print 2>/dev/null || true
             exit 1
-          fi
-          echo "4 个 APK 齐全"
-
-      # 断言产物**本身**是对的。这两条都不是预防性加码，而是已经真实发生过的失败模式：
-      #   1) 包名必须是 .tv.b6 —— CI 忘了传 -PcoexistSuffix 就会出 .tv，与上游 webhtv 冲突
-      #      （这是本分支共存方案的核心，见 app/build.gradle 的注释）
-      #   2) 必须带 v1(JAR) 签名 —— v2 是 Android 7.0 才引入的，而本分支目标机是 Android 6，
-      #      "Older platforms ignore v2 signatures and only verify v1 signatures"（AOSP 官方文档）
-      #      2026-09-29 实测：FinalizeApksTask 原本写死 v1=false ⇒ apksigner 报
-      #      DOES NOT VERIFY / Missing META-INF/MANIFEST.MF ⇒ 包装不上 Android 6
-      #
-      # 这里刻意不用 `grep -q` 收管道：本项目的校验脚本曾被 grep -q 的 SIGPIPE 坑出过"假通过"。
-      # 按项目约定，先把输出取到变量，再用 bash case 做纯字符串匹配。
-      - name: Verify package name and v1 signature
-        run: |
-          BT="$ANDROID_HOME/build-tools/36.0.0"
-          FAIL=0
-          for A in dist/*.apk; do
-            PKG="$("$BT/aapt2" dump badging "$A" 2>/dev/null | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
-            echo "--- $(basename "$A") ---"
-            echo "    package = $PKG"
-            if [ "$PKG" != "${{ steps.meta.outputs.app_id }}" ]; then
-              echo "::error title=Wrong package name::$A 的包名是 '$PKG'，期望 '${{ steps.meta.outputs.app_id }}'"
-              FAIL=1
-            fi
-            V="$("$BT/apksigner" verify --verbose "$A" 2>&1)"
-            case "$V" in
-              *"Verified using v1 scheme (JAR signing): true"*)
-                echo "    v1 (JAR) 签名 = true" ;;
-              *)
-                echo "::error title=Missing v1 signature::$A 没有 v1(JAR) 签名，装不上 Android 6"
-                echo "$V" | head -20
-                FAIL=1 ;;
-            esac
-          done
-          if [ "$FAIL" != "0" ]; then
-            exit 1
-          fi
-          echo "✅ 4 个 APK 的包名与 v1 签名都正确"
-
-      # 生成更新检测用的元数据，和 APK 一起放进 release。
-      #
-      # 内容就是 App 端 Updater.doInBackground() 读的三个字段：
-      #   name -> 弹窗标题里的版本号（versionName）
-      #   desc -> 弹窗正文（release notes）
-      #   code -> 与 BuildConfig.VERSION_CODE 比较，只有更大才提示更新
-      #
-      # 资产名 <flavor>.json，App 端由 Github.getJson(BuildConfig.FLAVOR) 取，
-      # 经 releases/latest/download/<flavor>.json 这个稳定别名访问。
-      #
-      # 用 python 而不是 printf/sed 生成：notes 里可能有引号、换行、反斜杠，
-      # 手工拼 JSON 会生成非法文档，而 App 端解析失败是静默的（catch 掉），
-      # 不会有人发现 —— 所以这里必须用真正的 JSON 序列化。
-      - name: Generate update metadata
-        env:
-          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
-          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
-          APP_ID: ${{ steps.meta.outputs.app_id }}
-          NOTES_RAW: ${{ inputs.release_notes }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-
-          notes = os.environ["NOTES_RAW"].replace("\\n", "\n").strip()
-          if not notes:
-              notes = "Android 6 (API 23) 分支在线构建。包名：" + os.environ["APP_ID"]
-
-          meta = {
-              "name": os.environ["VERSION_NAME"],
-              "desc": notes,
-              "code": int(os.environ["VERSION_CODE"]),
           }
 
-          for dev in ("leanback", "mobile"):
-              path = os.path.join("dist", dev + ".json")
-              with open(path, "w", encoding="utf-8") as fh:
-                  json.dump(meta, fh, ensure_ascii=False, indent=2)
-              print("生成", path, "->", meta["name"], "code", meta["code"])
-          PY
+          echo "Android API 37.0 installed successfully."
 
-          # 断言：两个 JSON 都要在，且必须能被解析。少一个或格式坏掉就大声失败，
-          # 不允许"构建成功但元数据缺失"这种假通过。
-          for DEV in leanback mobile; do
-            F="dist/$DEV.json"
-            if [ ! -s "$F" ]; then
-              echo "::error title=Missing update metadata::$F 没生成或为空"
+      - name: Cache Chaquopy
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/chaquopy
+            ~/.cache/pip
+          key: chaquopy-${{ runner.os }}-py310-${{ hashFiles('chaquo/requirements.txt', 'gradle/libs.versions.toml') }}
+          restore-keys: |
+            chaquopy-${{ runner.os }}-py310-
+
+      - name: Configure release signing
+        env:
+          B64KEY: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          for v in B64KEY KEY_ALIAS STORE_PASSWORD KEY_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::缺少 GitHub Secret: $v"
               exit 1
             fi
           done
-          python3 -c "import json,sys; [json.load(open('dist/%s.json' % d, encoding='utf-8')) for d in ('leanback','mobile')]" \
-            || { echo "::error title=Invalid update metadata::dist/*.json 不是合法 JSON"; exit 1; }
-          echo "✅ leanback.json / mobile.json 已生成且可解析"
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_NOTES_RAW: ${{ inputs.release_notes }}
+          STORE_FILE="$GITHUB_WORKSPACE/.key/release.jks"
+          mkdir -p "$(dirname "$STORE_FILE")"
+
+          printf '%s' "$B64KEY" | tr -d '\r\n ' | base64 --decode > "$STORE_FILE"
+          test -s "$STORE_FILE"
+
+          keytool -list \
+            -keystore "$STORE_FILE" \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+          cat > local.properties <<EOF
+          storeFile=$STORE_FILE
+          keyAlias=$KEY_ALIAS
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+          echo "Release signing configured."
+
+      - name: Grant execute permission
+        run: chmod +x gradlew media3/gradlew media3-ass/gradlew
+
+      - name: Restore ASS, ISO and EXO disc navigation in Media3
         run: |
-          PRERELEASE_FLAG=""
-          if [ "${{ inputs.prerelease }}" = "true" ]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-          NOTES="$(printf '%s' "$RELEASE_NOTES_RAW" | sed 's/\\n/\n/g')"
-          if [ -z "$NOTES" ]; then
-            NOTES="Android 6 (API 23) 分支在线构建。包名：${{ steps.meta.outputs.app_id }}"
-          fi
-          gh release create "${{ steps.meta.outputs.tag }}" \
-            --target "$GITHUB_SHA" \
-            --title "${{ steps.meta.outputs.title }}" \
-            --notes "$NOTES" \
-            $PRERELEASE_FLAG \
-            dist/*.apk dist/*.json
+          set -euo pipefail
+          git -C media3 apply "$GITHUB_WORKSPACE/patches/media3-ass-matroska.patch"
+          git -C media3 apply "$GITHUB_WORKSPACE/patches/media3-ass-matroska-test.patch"
+          git -C media3 apply "$GITHUB_WORKSPACE/patches/media3-iso9660-fallback.patch"
+          git -C media3 apply "$GITHUB_WORKSPACE/patches/media3-mpv-disc-navigation-test.patch"
+          python3 scripts/restore_official_java_bridges.py --media3-root media3
+          python3 scripts/restore_exo_disc_navigation.py --media3-root media3
+          git -C media3 diff --check
 
-      - name: Upload workflow artifacts
+      - name: Download verified official 5.6.8 APKs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fongmi-official-568"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 \
+            "https://github.com/FongMi/Release/releases/download/5.6.8/mobile-arm64_v8a.apk" \
+            --output "$RUNNER_TEMP/fongmi-official-568/mobile-arm64_v8a.apk"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 600 \
+            "https://github.com/FongMi/Release/releases/download/5.6.8/mobile-armeabi_v7a.apk" \
+            --output "$RUNNER_TEMP/fongmi-official-568/mobile-armeabi_v7a.apk"
+          echo "2e23a0ecc61f3fb908a566661f9e3f78d0027198671e0aed6bd1b94570c3eaea  $RUNNER_TEMP/fongmi-official-568/mobile-arm64_v8a.apk" | sha256sum --check
+          echo "6c062459ccd6b0f8c4bfb4293b47b732e47943032b1d9959fc4bcd1b45d299f9  $RUNNER_TEMP/fongmi-official-568/mobile-armeabi_v7a.apk" | sha256sum --check
+
+      - name: Update compatibility scripts for official 5.6.8 hashes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              "5428c11d5aa09813dfa2fde8a32be2beeeddfc45d093b89e46ed53cd696a3b3c": "2e23a0ecc61f3fb908a566661f9e3f78d0027198671e0aed6bd1b94570c3eaea",
+              "492bc0b1d4607a41d3c3f56d37bc590be0ee6b8b481bebe52f6dd2b0819d2385": "6c062459ccd6b0f8c4bfb4293b47b732e47943032b1d9959fc4bcd1b45d299f9",
+          }
+
+          files = [
+              Path("scripts/stage_official_native_test.py"),
+              Path("scripts/restore_official_567_ffmpeg.py"),
+              Path("scripts/recover_official_mpv.py"),
+          ]
+
+          for path in files:
+              data = path.read_text(encoding="utf-8")
+              for old, new in replacements.items():
+                  data = data.replace(old, new)
+              data = data.replace("official 5.6.7", "official 5.6.8")
+              data = data.replace("Official 5.6.7", "Official 5.6.8")
+              data = data.replace("official-5.6.7-apks", "official-5.6.8-apks")
+              data = data.replace('"5.6.7" if source == "official-5.6.8-apks"', '"5.6.8" if source == "official-5.6.8-apks"')
+              data = data.replace("Staged verified 5.6.7 payloads", "Staged verified 5.6.8 payloads")
+              path.write_text(data, encoding="utf-8")
+              print(f"Updated {path} for official 5.6.8")
+
+          for path in files:
+              data = path.read_text(encoding="utf-8")
+              if "5428c11d5aa09813dfa2fde8a32be2beeeddfc45d093b89e46ed53cd696a3b3c" in data or "492bc0b1d4607a41d3c3f56d37bc590be0ee6b8b481bebe52f6dd2b0819d2385" in data:
+                  raise SystemExit(f"stale 5.6.7 APK hash remains in {path}")
+          PY
+
+      - name: Stage official 5.6.8 native payloads
+        run: |
+          set -euo pipefail
+          python3 scripts/stage_official_native_test.py \
+            --arm64 "$RUNNER_TEMP/fongmi-official-568/mobile-arm64_v8a.apk" \
+            --armeabi "$RUNNER_TEMP/fongmi-official-568/mobile-armeabi_v7a.apk" \
+            --app-root app \
+            --report official-native-stage.json
+          cat official-native-stage.json
+
+      - name: Restore official 5.6.8 FFmpeg family
+        run: |
+          set -euo pipefail
+          python3 scripts/restore_official_567_ffmpeg.py \
+            --arm64 "$RUNNER_TEMP/fongmi-official-568/mobile-arm64_v8a.apk" \
+            --armeabi "$RUNNER_TEMP/fongmi-official-568/mobile-armeabi_v7a.apk" \
+            --media3-root media3
+
+      - name: Restore official 5.6.8 MPV disc menu binaries
+        run: |
+          set -euo pipefail
+          python3 scripts/recover_official_mpv.py \
+            --arm64 "$RUNNER_TEMP/fongmi-official-568/mobile-arm64_v8a.apk" \
+            --armeabi "$RUNNER_TEMP/fongmi-official-568/mobile-armeabi_v7a.apk" \
+            --media3-root media3
+
+      - name: Verify official 5.6.8 Dolby Vision JNI against FFmpeg
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_official_dovi_linkage.py \
+            --media3-root media3 \
+            --app-root app
+
+      - name: Build matching FongMi Media3 AARs
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=120000 -Dorg.gradle.internal.http.socketTimeout=120000"
+        run: |
+          set -euo pipefail
+
+          MEDIA_TASKS=()
+          while IFS= read -r AAR || [ -n "$AAR" ]; do
+            AAR="${AAR%$'\r'}"
+            [ -n "$AAR" ] || continue
+            MODULE="${AAR%-release.aar}"
+            MEDIA_TASKS+=(":${MODULE}:assembleRelease")
+          done < media3/move.txt
+
+          ./media3/gradlew \
+            -p media3 \
+            "${MEDIA_TASKS[@]}" \
+            --stacktrace \
+            --no-daemon
+
+          COPIED=0
+          while IFS= read -r AAR || [ -n "$AAR" ]; do
+            AAR="${AAR%$'\r'}"
+            [ -n "$AAR" ] || continue
+            # Media3 redirects every module's build directory to media3/buildout,
+            # so search the checkout rather than assuming libraries/*/build.
+            SOURCE="$(find media3 -type f -path "*/outputs/aar/$AAR" -print -quit)"
+            if [ -z "$SOURCE" ]; then
+              echo "::error::Missing Media3 AAR: $AAR"
+              exit 1
+            fi
+            cp "$SOURCE" app/libs/"$AAR"
+            COPIED=$((COPIED + 1))
+          done < media3/move.txt
+
+          EXPECTED="$(grep -cve '^[[:space:]]*$' media3/move.txt)"
+          [ "$COPIED" -eq "$EXPECTED" ] || {
+            echo "::error::Copied $COPIED Media3 AARs, expected $EXPECTED"
+            exit 1
+          }
+
+          echo "== Media3 AARs copied to app/libs =="
+          find app/libs -maxdepth 1 -type f -name 'lib-*-release.aar' -print | sort
+
+      - name: Build the original FongMi libass module from source
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=120000 -Dorg.gradle.internal.http.socketTimeout=120000"
+        run: |
+          set -euo pipefail
+          bash media3-ass/libraries/exoplayer_libass/src/main/jni/prepare_libass.sh
+          ./media3-ass/gradlew -p media3-ass :lib-exoplayer-libass:assembleRelease --stacktrace --no-daemon
+          source_aar="$(find media3-ass -type f -path '*/outputs/aar/lib-exoplayer-libass-release.aar' -print -quit)"
+          test -n "$source_aar"
+          cp "$source_aar" app/libs/lib-exoplayer-libass-release.aar
+          python3 scripts/test_libass_aar.py
+
+      - name: Test Matroska subtitles and ISO 9660 disc reading
+        run: |
+          set -euo pipefail
+          ./media3/gradlew -p media3 :lib-extractor:testDebugUnitTest \
+            --tests 'androidx.media3.extractor.mkv.MatroskaExtractorNonParameterizedTest' \
+            --tests 'androidx.media3.extractor.iso.udf.Iso9660FallbackTest' \
+            --no-daemon
+
+      - name: Test native menu commands and Dolby Vision P5 policy
+        run: |
+          set -euo pipefail
+          ./media3/gradlew -p media3 :lib-mpvplayer:testDebugUnitTest \
+            --tests 'androidx.media3.mpvplayer.nativebridge.MpvCommandDispatcherTest' --no-daemon
+          ./media3/gradlew -p media3 :lib-decoder-ffmpeg:testDebugUnitTest \
+            --tests 'androidx.media3.decoder.ffmpeg.FfmpegDolbyVisionOutputTest' --no-daemon
+
+      - name: Verify expected build tasks for app
+        run: |
+          set -euo pipefail
+          ./gradlew :app:tasks --all --no-daemon > app-tasks.txt
+          grep -q "assembleMobileRelease" app-tasks.txt
+          grep -q "assembleLeanbackRelease" app-tasks.txt
+
+      - name: Build mobile and TV release APKs
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=120000 -Dorg.gradle.internal.http.socketTimeout=120000"
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+
+          ./gradlew \
+            -Dorg.gradle.jvmargs="-Xmx4096m -Dfile.encoding=UTF-8 --add-exports jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED" \
+            :app:assembleMobileRelease \
+            :app:assembleLeanbackRelease \
+            --max-workers=1 \
+            --stacktrace \
+            --no-daemon
+
+          echo "== Gradle APK outputs =="
+          find app/build/outputs/apk -type f -name '*.apk' -print -exec ls -lh {} \;
+
+      - name: Collect four APKs
+        id: collect
+        run: |
+          set -euo pipefail
+
+          APK_ROOT="app/build/outputs/apk"
+          test -d "$APK_ROOT" || {
+            echo "::error::Gradle APK output directory not found: $APK_ROOT"
+            find app/build -type f -name '*.apk' -print || true
+            exit 1
+          }
+
+          copy_apk() {
+            local source_name="$1" target_name="$2"
+            local -a matches=()
+            mapfile -d '' -t matches < <(find "$APK_ROOT" -type f -name "$source_name" -print0)
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "::error::Expected one $source_name in $APK_ROOT, found ${#matches[@]}"
+              find "$APK_ROOT" -type f -name '*.apk' -print
+              exit 1
+            fi
+            test -s "${matches[0]}" || { echo "::error::Empty APK: ${matches[0]}"; exit 1; }
+            cp "${matches[0]}" "dist/$target_name"
+          }
+
+          copy_apk "mobile-arm64_v8a.apk" "mobile-arm64_v8a-b6.apk"
+          copy_apk "mobile-armeabi_v7a.apk" "mobile-armeabi_v7a-b6.apk"
+          copy_apk "leanback-arm64_v8a.apk" "leanback-arm64_v8a-b6.apk"
+          copy_apk "leanback-armeabi_v7a.apk" "leanback-armeabi_v7a-b6.apk"
+
+          COUNT="$(find dist -maxdepth 1 -type f -name '*.apk' | wc -l | tr -d ' ')"
+          [ "$COUNT" = "4" ] || {
+            echo "::error::实际 APK 数量是 $COUNT，不是 4"
+            exit 1
+          }
+
+          echo "== Final APKs =="
+          ls -lh dist/
+
+          for apk in dist/*.apk; do
+            case "$apk" in
+              *arm64*) abi=arm64-v8a ;;
+              *armeabi*) abi=armeabi-v7a ;;
+              *) echo "::error::Unknown ABI for $apk"; exit 1 ;;
+            esac
+            unzip -Z1 "$apk" | grep -Fx "lib/$abi/libmedia3ass.so" >/dev/null || {
+              echo "::error::Missing native libass in $apk ($abi)"
+              exit 1
+            }
+            unzip -Z1 "$apk" | grep -Fx "lib/$abi/libmpv.so" >/dev/null || {
+              echo "::error::Missing native MPV disc navigation in $apk ($abi)"
+              exit 1
+            }
+            for native in libisoJNI.so libffmpegDoviJNI.so libcmg_decrypt.so libmedia3effect.so; do
+              unzip -Z1 "$apk" | grep -Fx "lib/$abi/$native" >/dev/null || {
+                echo "::error::Missing staged official native $native in $apk ($abi)"
+                exit 1
+              }
+            done
+            for bdj in libbluray-j2se-1.4.1.jar libbluray-awt-j2se-1.4.1.jar; do
+              unzip -Z1 "$apk" | grep -Fx "assets/bdj/$bdj" >/dev/null || {
+                echo "::error::Missing BD-J asset $bdj in $apk"
+                exit 1
+              }
+            done
+          done
+
+          # Verify the source-built ISO 9660 reader survived AAR copying and R8 packaging.
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          marker = b"ISO 9660: primary volume descriptor not found"
+          for apk in sorted(Path("dist").glob("*.apk")):
+              with ZipFile(apk) as archive:
+                  dex_names = [name for name in archive.namelist() if name.endswith(".dex")]
+                  if not any(marker in archive.read(name) for name in dex_names):
+                      raise SystemExit(f"::error::ISO 9660 reader missing from {apk}")
+                  abi = "arm64-v8a" if "arm64" in apk.name else "armeabi-v7a"
+                  mpv = archive.read(f"lib/{abi}/libmpv.so")
+                  if not all(symbol in mpv for symbol in (b"dvdnav_menu_call", b"bd_menu_call", b"disc-menu-active")):
+                      raise SystemExit(f"::error::MPV disc menu support missing from {apk}")
+                  dex_blob = b"".join(archive.read(name) for name in dex_names)
+                  for bridge in (
+                      b"androidx/media3/extractor/iso/udf/NativeUdfFileSystem",
+                      b"androidx/media3/exoplayer/iso/IsoNavigationSession",
+                      b"androidx/media3/exoplayer/source/DiscNavigationSource",
+                      b"androidx/media3/exoplayer/source/iso/IsoNavigationDataSource",
+                      b"androidx/media3/decoder/ffmpeg/FfmpegDolbyVisionP5Native",
+                  ):
+                      if bridge not in dex_blob:
+                          raise SystemExit(f"::error::JNI bridge class {bridge!r} missing from {apk}")
+              print(f"ISO 9660 reader found in {apk}")
+          PY
+
+      - name: Verify upgrade identity and signing continuity
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p test_verify_upgrade_apks.py
+          curl --fail --location --retry 3 --retry-all-errors --max-time 600 \
+            'https://github.com/15840213978a/fongmi-android6-main/releases/download/v5.6.3-202610011533/mobile-arm64_v8a-b6.apk' \
+            --output "$RUNNER_TEMP/previous-b6.apk"
+          python3 scripts/verify_upgrade_apks.py \
+            --build-tools "$ANDROID_HOME/build-tools/37.0.0" \
+            --previous-apk "$RUNNER_TEMP/previous-b6.apk"
+
+      - name: Preserve APKs if final verification fails
+        if: failure() && steps.collect.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: fongmi-android6-${{ steps.meta.outputs.tag }}
+          name: unverified-apks-${{ github.run_id }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload APKs and update metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: TV-5.6.8-Android7-b6-${{ github.run_number }}
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_RELEASE: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.stable_release }}
+        run: |
+          set -euo pipefail
+          TAG="v5.6.8-ci-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+          FLAGS=(--prerelease --latest=false)
+          if [ "$STABLE_RELEASE" = "true" ]; then
+            FLAGS=(--latest)
+          fi
+          cat > "$RUNNER_TEMP/upgrade-release-notes.md" <<EOF
+          影视 5.6.8，最低 Android 7.0（API 24）。
+
+          源码提交：$BUILD_COMMIT
+          包名：com.fongmi.android.tv.b6；沿用 5.6.3 的签名。
+          包含手机/电视 × ARM32/ARM64 四个安装包。
+          更新下载代理保留；应用内更新地址改为本仓库。
+          编译校验包含播放器原生库、ABI、版本、最低系统、包名和签名一致性。
+          未完成真机播放与覆盖升级测试；Android 6 设备请保留旧版。
+          EOF
+          gh release create "$TAG" --target "$BUILD_COMMIT" \
+            --title '影视 5.6.8 · Android 7+' \
+            --notes-file "$RUNNER_TEMP/upgrade-release-notes.md" \
+            "${FLAGS[@]}" dist/*.apk dist/*.json
+          echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

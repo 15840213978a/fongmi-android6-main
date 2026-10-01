@@ -1,7 +1,6 @@
 package com.github.catvod.net;
 
 import com.github.catvod.bean.Proxy;
-import com.github.catvod.crawler.SpiderDebug;
 import com.github.catvod.utils.Util;
 
 import java.io.IOException;
@@ -31,20 +30,9 @@ public class OkProxySelector extends ProxySelector {
         proxy.sort(null);
     }
 
-    // 壳代理（从 webhtv 移植）：按规则名整体摘掉一批规则。
-    // ProxySetting.apply() 每次先 remove("app") 再 addAll()，这样规则改动是幂等的，
-    // 不会因为反复 apply 而把同一批规则叠加进去。
-    public synchronized void remove(String name) {
-        int before = proxy.size();
-        proxy.removeIf(item -> item.getName().equals(name));
-        int removed = before - proxy.size();
-        if (removed > 0) SpiderDebug.log("proxy", "selector remove name=%s removed=%s total=%s", name, removed, proxy.size());
-    }
-
     public synchronized void clear() {
         Authenticator.setDefault(null);
         proxy.clear();
-        SpiderDebug.log("proxy", "selector clear");
     }
 
     public List<Proxy> getProxy() {

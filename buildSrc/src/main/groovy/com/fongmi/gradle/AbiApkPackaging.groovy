@@ -9,28 +9,12 @@ class AbiApkPackaging {
     static void configure(Project project, Object apkArtifact) {
         def android = project.extensions.getByName('android')
         def components = project.extensions.getByName('androidComponents')
-        def suffix = apkSuffix(project)
         configureAbis(android)
+        configureDebugResourceCacheKey(project, components)
         components.onVariants(components.selector().withBuildType('release')) { variant ->
-            def device = configureOutputFileNames(variant, suffix)
+            configureOutputFileNames(variant)
             configureFinalizer(project, android, components, variant, apkArtifact)
-            configureReleaseExport(project, variant, device)
         }
-    }
-
-    /**
-     * 产物文件名后缀，直接复用 applicationIdSuffix 用的**同一个参数**（-PcoexistSuffix=.b6）：
-     * 一处参数同时决定「包名后缀」和「文件名后缀」，不可能对不上。
-     * 输出形态与上一代 webhtv-android6 一致：leanback-armeabi_v7a-b6.apk
-     *
-     * 上一代把这件事拆成两个来源（CI 输入 app_id_suffix + 环境变量 WEBHTV_APK_SUFFIX），
-     * 要靠人工保持同步；这里合成一个，少一个出错点。
-     */
-    private static String apkSuffix(Project project) {
-        def raw = project.findProperty('coexistSuffix')
-        if (raw == null) return ''
-        def s = raw.toString().replaceAll('[^A-Za-z0-9._-]', '').replaceFirst(/^\./, '')
-        return s ? "-${s}" : ''
     }
 
     static String otherAbi(String abi) {
@@ -46,14 +30,27 @@ class AbiApkPackaging {
         }
     }
 
-    private static String configureOutputFileNames(def variant, String suffix) {
+    private static void configureDebugResourceCacheKey(Project project, def components) {
+        def injectedApi = project.providers.gradleProperty('android.injected.build.api').orElse('')
+        def injectedAbis = project.providers.gradleProperty('android.injected.build.abi').orElse('')
+        def stableIds = project.providers.gradleProperty('android.injected.enableStableIds').orElse('')
+        components.onVariants(components.selector().withBuildType('debug')) { variant ->
+            def taskName = "process${variant.name.capitalize()}Resources"
+            project.tasks.matching { it.name == taskName }.configureEach { task ->
+                task.inputs.property('androidInjectedBuildApi', injectedApi)
+                task.inputs.property('androidInjectedBuildAbis', injectedAbis)
+                task.inputs.property('androidInjectedStableIds', stableIds)
+            }
+        }
+    }
+
+    private static void configureOutputFileNames(def variant) {
         def flavors = variant.productFlavors.collectEntries { [(it.first): it.second] }
         def device = flavors['device'] ?: 'device'
         variant.outputs.each { output ->
             def abi = output.filters.find { it.filterType.name() == 'ABI' }?.identifier?.replace('-', '_') ?: 'universal'
-            output.outputFileName.set("${device}-${abi}${suffix}.apk")
+            output.outputFileName.set("${device}-${abi}.apk")
         }
-        return device
     }
 
     private static void configureFinalizer(Project project, def android, def components, def variant, Object apkArtifact) {
@@ -74,21 +71,6 @@ class AbiApkPackaging {
                 .toTransformMany(apkArtifact)
         finalizeTask.configure { task ->
             task.transformationRequest.set(request)
-        }
-    }
-
-    private static void configureReleaseExport(Project project, def variant, String device) {
-        def taskName = "assemble${variant.name.capitalize()}"
-        def apkDirectory = project.layout.buildDirectory.dir("outputs/apk/${device}/release").get().asFile
-        project.tasks.matching { it.name == taskName }.configureEach {
-            doLast {
-                project.copy {
-                    from project.fileTree(dir: apkDirectory, include: "${device}-*.apk")
-                    into project.rootProject.file('Release/apk')
-                    eachFile { it.path = it.name }
-                    includeEmptyDirs = false
-                }
-            }
         }
     }
 }
