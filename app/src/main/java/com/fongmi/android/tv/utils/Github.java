@@ -10,7 +10,7 @@ public class Github {
     //   <flavor>.json                例：leanback.json / mobile.json
     //   <flavor>-<abi>-<suffix>.apk  例：leanback-arm64_v8a-b6.apk
     // 其中 <suffix> 由 -PcoexistSuffix 推导（.b6 -> -b6），Updater 按包名后缀算出。
-    public static final String URL = "https://github.com/yilishawk/fongmi-android6/releases/latest/download";
+    public static final String URL = "https://github.com/15840213978a/fongmi-android6-main/releases/latest/download";
 
     private static String getUrl(String name) {
         return URL + "/" + name;

@@ -38,3 +38,10 @@ local.properties
 __pycache__/
 *.pyc
 node_modules/
+
+# New upstream modules and local CI checkouts
+/nodejs/.cxx/
+/media3/
+/media3-ass/
+/.key/
+app/libs/lib-*.aar
