@@ -62,6 +62,12 @@ jobs:
           path: media3
           fetch-depth: 1
 
+      - name: Use GitHub mirrors for pinned libass dependencies
+        run: |
+          # Preserve the exact gitlink commits while avoiding GitLab 503/504 outages.
+          git config --global url."https://github.com/fontconfig/fontconfig".insteadOf https://gitlab.freedesktop.org/fontconfig/fontconfig
+          git config --global url."https://github.com/freetype/freetype".insteadOf https://gitlab.freedesktop.org/freetype/freetype
+
       - name: Checkout original FongMi libass source and its native submodules
         uses: actions/checkout@v4
         with:
