@@ -38,5 +38,17 @@ class CertificateOutputTest(unittest.TestCase):
             verifier.certificate_digest(f"Number of signers: 1\nSource Stamp Signer: certificate SHA-256 digest: {self.digest}\n")
 
 
+class ManifestOutputTest(unittest.TestCase):
+    def test_build_tools_37_minimum_is_not_target(self):
+        self.assertEqual(verifier.minimum_sdk("minSdkVersion:'23'\ntargetSdkVersion:'37'\n"), 23)
+
+    def test_older_build_tools_output(self):
+        self.assertEqual(verifier.minimum_sdk("sdkVersion:'24'\ntargetSdkVersion:'37'\n"), 24)
+
+    def test_rejects_missing_minimum_sdk(self):
+        with self.assertRaises(RuntimeError):
+            verifier.minimum_sdk("targetSdkVersion:'24'\n")
+
+
 if __name__ == "__main__":
     unittest.main()

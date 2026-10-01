@@ -30,6 +30,13 @@ def signer(apksigner, apk):
     return certificate_digest(text)
 
 
+def minimum_sdk(text):
+    match = re.search(r"(?m)^(?:sdkVersion|minSdkVersion):'(\d+)'$", text)
+    if match is None:
+        raise RuntimeError("Missing APK minimum SDK")
+    return int(match.group(1))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-tools", type=Path, required=True)
@@ -47,9 +54,11 @@ def main():
         apk = Path("dist") / name
         badging = output(str(bt / "aapt2"), "dump", "badging", str(apk))
         for pattern in (r"package: name='com\.fongmi\.android\.tv\.b6'",
-                        r"versionCode='568'", r"versionName='5\.6\.8'", r"(?m)^sdkVersion:'24'$"):
+                        r"versionCode='568'", r"versionName='5\.6\.8'"):
             if not re.search(pattern, badging):
                 raise RuntimeError(f"APK identity/platform mismatch ({pattern}): {apk}")
+        if minimum_sdk(badging) != 24:
+            raise RuntimeError(f"Expected Android 7 minimum SDK: {apk}")
         if signer(bt / "apksigner", apk) != expected_signer:
             raise RuntimeError(f"Signing key differs from installed 5.6.3: {apk}")
         with ZipFile(apk) as archive:
